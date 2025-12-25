@@ -966,5 +966,20 @@
 // --> 
         init();
     </script>
+  <!-- 音频可视化画布（可选，但很酷） -->
+<canvas id="audioCanvas" style="position: fixed; bottom: 20px; left: 20px; width: 150px; height: 80px; z-index: 999; opacity: 0.7;"></canvas>
+
+<!-- 音乐状态提示 -->
+<div id="audioState" style="position: fixed; bottom: 110px; right: 20px; z-index: 1000; background: rgba(0,0,0,0.7); padding: 8px 15px; border-radius: 20px; color: #FFD700; font-family: sans-serif; font-size: 12px; display: none;">
+  🎵 爆炸模式：音乐增强中...
+</div>
+
+<!-- 音频控制器 -->
+<div id="musicPlayer" style="position: fixed; bottom: 20px; right: 20px; z-index: 1000; background: rgba(0,0,0,0.7); padding: 10px 15px; border-radius: 50px; color: #FFD700; display: flex; align-items: center; gap: 10px; font-family: sans-serif;">
+  <button id="playBtn" style="background: #FFD700; border: none; width: 30px; height: 30px; border-radius: 50%; cursor: pointer; font-size: 12px;">▶</button>
+  <span style="font-size: 14px;">手势音乐</span>
+  <input id="volume" type="range" min="0" max="100" value="50" style="width: 80px;">
+</div>
 </body>
 </html>
+

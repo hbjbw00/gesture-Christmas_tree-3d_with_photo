@@ -872,32 +872,44 @@
             requestAnimationFrame(predictWebcam);
         }
 
-        function processGestures(result) {
-            if (result.landmarks && result.landmarks.length > 0) {
-                STATE.hand.detected = true;
-                const lm = result.landmarks[0];
-                STATE.hand.x = (lm[9].x - 0.5) * 2; 
-                STATE.hand.y = (lm[9].y - 0.5) * 2;
-                const wrist = lm[0]; const middleMCP = lm[9]; 
-                const handSize = Math.hypot(middleMCP.x - wrist.x, middleMCP.y - wrist.y);
-                if (handSize < 0.02) return;
-                const tips = [lm[8], lm[12], lm[16], lm[20]];
-                let avgTipDist = 0; tips.forEach(t => avgTipDist += Math.hypot(t.x - wrist.x, t.y - wrist.y)); avgTipDist /= 4;
-                const pinchDist = Math.hypot(lm[4].x - lm[8].x, lm[4].y - lm[8].y);
-                const extensionRatio = avgTipDist / handSize; const pinchRatio = pinchDist / handSize;
-                debugInfo.innerText = `Gesture Detected: ${STATE.mode}`;
-                if (extensionRatio < 1.5) { STATE.mode = 'TREE'; STATE.focusTarget = null; }
-                else if (pinchRatio < 0.35) {
-                    if (STATE.mode !== 'FOCUS') {
-                        STATE.mode = 'FOCUS';
-                        const photos = particleSystem.filter(p => p.type === 'PHOTO');
-                        if (photos.length) STATE.focusTarget = photos[Math.floor(Math.random()*photos.length)].mesh;
-                    }
-                } else if (extensionRatio > 1.7) { STATE.mode = 'SCATTER'; STATE.focusTarget = null; }
-            } else {
-                STATE.hand.detected = false;
-            }
-        }
+function processGestures(result) {
+  if (result.landmarks && result.landmarks.length > 0) {
+    STATE.hand.detected = true;
+    const lm = result.landmarks[0];
+    STATE.hand.x = (lm[9].x - 0.5) * 2; 
+    STATE.hand.y = (lm[9].y - 0.5) * 2;
+    const wrist = lm[0]; const middleMCP = lm[9]; 
+    const handSize = Math.hypot(middleMCP.x - wrist.x, middleMCP.y - wrist.y);
+    if (handSize < 0.02) return;
+    const tips = [lm[8], lm[12], lm[16], lm[20]];
+    let avgTipDist = 0; tips.forEach(t => avgTipDist += Math.hypot(t.x - wrist.x, t.y - wrist.y)); avgTipDist /= 4;
+    const pinchDist = Math.hypot(lm[4].x - lm[8].x, lm[4].y - lm[8].y);
+    const extensionRatio = avgTipDist / handSize; const pinchRatio = pinchDist / handSize;
+    debugInfo.innerText = `Gesture Detected: ${STATE.mode}`;
+    
+    // 【新增】音频控制集成
+    if (window.audioController && window.audioController.isPlaying) {
+      if (extensionRatio > 1.7) {
+        // 张开手掌：爆炸模式（对应SCATTER模式）
+        window.audioController.enableExplosionMode();
+      } else if (extensionRatio < 1.5) {
+        // 握拳：普通模式（对应TREE模式）
+        window.audioController.enableNormalMode();
+      }
+    }
+    
+    if (extensionRatio < 1.5) { STATE.mode = 'TREE'; STATE.focusTarget = null; }
+    else if (pinchRatio < 0.35) {
+      if (STATE.mode !== 'FOCUS') {
+        STATE.mode = 'FOCUS';
+        const photos = particleSystem.filter(p => p.type === 'PHOTO');
+        if (photos.length) STATE.focusTarget = photos[Math.floor(Math.random()*photos.length)].mesh;
+      }
+    } else if (extensionRatio > 1.7) { STATE.mode = 'SCATTER'; STATE.focusTarget = null; }
+  } else {
+    STATE.hand.detected = false;
+  }
+}
 
         function setupEvents() {
             window.addEventListener('resize', () => {
@@ -980,6 +992,302 @@
   <span style="font-size: 14px;">手势音乐</span>
   <input id="volume" type="range" min="0" max="100" value="50" style="width: 80px;">
 </div>
+  <script>
+class GestureAudioController {
+  constructor() {
+    this.audioContext = null;
+    this.audioSource = null;
+    this.analyser = null;
+    this.gainNode = null;
+    this.isPlaying = false;
+    
+    // 音频效果节点
+    this.convolver = null;     // 混响
+    this.distortion = null;    // 失真
+    this.compressor = null;    // 压缩器
+    
+    // 状态
+    this.currentMode = 'normal'; // 'normal' 或 'explosion'
+    
+    this.init();
+  }
+  
+  async init() {
+    // 初始化Web Audio上下文（需要用户交互后）
+    this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    
+    // 创建效果节点
+    this.createEffectNodes();
+    
+    // 加载音频文件 - 确保文件名正确！
+    await this.loadAudio('jingle_bells.mp3');
+    
+    // 设置音量控制
+    this.setupVolumeControl();
+    
+    // 设置播放按钮
+    this.setupPlayButton();
+    
+    console.log('Gesture Audio Controller 初始化完成');
+  }
+  
+  createEffectNodes() {
+    // 创建增益节点（控制音量）
+    this.gainNode = this.audioContext.createGain();
+    this.gainNode.gain.value = 0.5;
+    
+    // 创建分析器（用于可视化）
+    this.analyser = this.audioContext.createAnalyser();
+    this.analyser.fftSize = 256;
+    
+    // 创建压缩器（使声音更饱满）
+    this.compressor = this.audioContext.createDynamicsCompressor();
+    this.compressor.threshold.value = -24;
+    this.compressor.knee.value = 30;
+    this.compressor.ratio.value = 12;
+    this.compressor.attack.value = 0.003;
+    this.compressor.release.value = 0.25;
+    
+    // 创建失真节点
+    this.distortion = this.audioContext.createWaveShaper();
+    this.distortion.curve = this.makeDistortionCurve(400);
+    this.distortion.oversample = '4x';
+    
+    // 创建混响节点
+    this.convolver = this.audioContext.createConvolver();
+    this.createReverbBuffer();
+    
+    // 连接到输出
+    this.gainNode.connect(this.analyser);
+    this.analyser.connect(this.compressor);
+    this.compressor.connect(this.audioContext.destination);
+  }
+  
+  // 生成失真曲线
+  makeDistortionCurve(amount) {
+    const samples = 44100;
+    const curve = new Float32Array(samples);
+    const deg = Math.PI / 180;
+    
+    for (let i = 0; i < samples; i++) {
+      const x = (i * 2) / samples - 1;
+      curve[i] = ((3 + amount) * x * 20 * deg) / (Math.PI + amount * Math.abs(x));
+    }
+    return curve;
+  }
+  
+  // 创建简易混响缓冲
+  createReverbBuffer() {
+    const length = this.audioContext.sampleRate * 2; // 2秒混响
+    const buffer = this.audioContext.createBuffer(2, length, this.audioContext.sampleRate);
+    
+    for (let channel = 0; channel < 2; channel++) {
+      const data = buffer.getChannelData(channel);
+      for (let i = 0; i < length; i++) {
+        data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, 3);
+      }
+    }
+    
+    this.convolver.buffer = buffer;
+  }
+  
+  async loadAudio(url) {
+    try {
+      const response = await fetch(url);
+      const arrayBuffer = await response.arrayBuffer();
+      this.audioBuffer = await this.audioContext.decodeAudioData(arrayBuffer);
+      console.log('音频加载成功');
+    } catch (error) {
+      console.error('音频加载失败:', error);
+      // 如果文件不存在，提供一个备选方案
+      showMsg("音乐文件未找到，请确保jingle_bells.mp3在项目根目录");
+    }
+  }
+  
+  setupVolumeControl() {
+    const volumeSlider = document.getElementById('volume');
+    if (!volumeSlider) return;
+    
+    volumeSlider.addEventListener('input', (e) => {
+      if (this.gainNode) {
+        this.gainNode.gain.value = e.target.value / 100;
+      }
+    });
+  }
+  
+  setupPlayButton() {
+    const playBtn = document.getElementById('playBtn');
+    if (!playBtn) return;
+    
+    playBtn.addEventListener('click', () => {
+      if (this.isPlaying) {
+        this.stop();
+        playBtn.innerHTML = '▶';
+      } else {
+        this.start();
+        playBtn.innerHTML = '⏸';
+      }
+    });
+  }
+  
+  start() {
+    if (!this.audioBuffer || this.isPlaying) return;
+    
+    // 创建音频源
+    this.audioSource = this.audioContext.createBufferSource();
+    this.audioSource.buffer = this.audioBuffer;
+    this.audioSource.loop = true;
+    
+    // 连接普通效果链
+    this.audioSource.connect(this.gainNode);
+    
+    // 开始播放
+    this.audioSource.start();
+    this.isPlaying = true;
+    
+    // 开始可视化
+    this.visualize();
+  }
+  
+  stop() {
+    if (this.audioSource && this.isPlaying) {
+      this.audioSource.stop();
+      this.audioSource = null;
+      this.isPlaying = false;
+    }
+  }
+  
+  // 切换到爆炸模式（音乐变激昂）
+  enableExplosionMode() {
+    if (!this.isPlaying || this.currentMode === 'explosion') return;
+    
+    // 断开原有连接
+    this.audioSource.disconnect();
+    
+    // 连接特效链：音频源 → 失真 → 混响 → 增益 → 分析器...
+    this.audioSource.connect(this.distortion);
+    this.distortion.connect(this.convolver);
+    this.convolver.connect(this.gainNode);
+    
+    // 增强效果参数
+    this.distortion.curve = this.makeDistortionCurve(800); // 更强的失真
+    this.gainNode.gain.value = Math.min(this.gainNode.gain.value * 1.5, 0.9); // 音量提高
+    
+    this.currentMode = 'explosion';
+    
+    // 显示状态提示
+    this.showAudioState('explosion');
+    
+    console.log('🎆 爆炸模式音乐已激活');
+  }
+  
+  // 切换到普通模式（音乐恢复正常）
+  enableNormalMode() {
+    if (!this.isPlaying || this.currentMode === 'normal') return;
+    
+    // 断开特效连接
+    this.audioSource.disconnect();
+    this.distortion.disconnect();
+    this.convolver.disconnect();
+    
+    // 重新连接普通链
+    this.audioSource.connect(this.gainNode);
+    
+    // 恢复参数
+    this.distortion.curve = this.makeDistortionCurve(400);
+    this.gainNode.gain.value = document.getElementById('volume').value / 100;
+    
+    this.currentMode = 'normal';
+    
+    // 隐藏状态提示
+    this.hideAudioState();
+    
+    console.log('🌲 普通模式音乐已恢复');
+  }
+  
+  showAudioState(mode) {
+    const stateElement = document.getElementById('audioState');
+    if (mode === 'explosion') {
+      stateElement.textContent = '🎵 爆炸模式：音乐增强中...';
+      stateElement.style.display = 'block';
+      
+      // 3秒后淡出
+      setTimeout(() => {
+        stateElement.style.opacity = '0';
+        setTimeout(() => {
+          stateElement.style.display = 'none';
+          stateElement.style.opacity = '0.7';
+        }, 500);
+      }, 3000);
+    }
+  }
+  
+  hideAudioState() {
+    const stateElement = document.getElementById('audioState');
+    stateElement.style.display = 'none';
+  }
+  
+  // 音频可视化
+  visualize() {
+    const canvas = document.getElementById('audioCanvas');
+    if (!canvas) return;
+    
+    const ctx = canvas.getContext('2d');
+    const bufferLength = this.analyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+    
+    canvas.width = canvas.offsetWidth;
+    canvas.height = canvas.offsetHeight;
+    
+    const draw = () => {
+      if (!this.isPlaying) return;
+      
+      requestAnimationFrame(draw);
+      
+      this.analyser.getByteFrequencyData(dataArray);
+      
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      
+      // 绘制频谱条
+      const barWidth = (canvas.width / bufferLength) * 2.5;
+      let barHeight;
+      let x = 0;
+      
+      // 根据模式选择颜色
+      const color = this.currentMode === 'explosion' ? '#FF0000' : '#FFD700';
+      
+      for (let i = 0; i < bufferLength; i++) {
+        barHeight = dataArray[i] / 2;
+        
+        ctx.fillStyle = color;
+        ctx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
+        
+        x += barWidth + 1;
+      }
+    };
+    
+    draw();
+  }
+}
+
+// 创建音频控制器实例（全局变量）
+let audioController;
+
+// 页面加载后初始化
+document.addEventListener('DOMContentLoaded', () => {
+  // 需要用户交互后才能初始化音频
+  const initAudioOnClick = () => {
+    if (!audioController) {
+      audioController = new GestureAudioController();
+      window.audioController = audioController; // 暴露给全局，便于调试
+    }
+    document.body.removeEventListener('click', initAudioOnClick);
+  };
+  
+  document.body.addEventListener('click', initAudioOnClick);
+});
+</script>
 </body>
 </html>
+
 
